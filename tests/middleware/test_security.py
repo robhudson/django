@@ -1,4 +1,5 @@
 from django.http import HttpResponse
+from django.middleware.constants import csp
 from django.test import RequestFactory, SimpleTestCase
 from django.test.utils import override_settings
 
@@ -312,44 +313,39 @@ class SecurityMiddlewareTest(SimpleTestCase):
 
     def test_csp_defaults_off(self):
         response = self.process_response()
-        self.assertNotIn("Content-Security-Policy", response.headers)
-        self.assertNotIn("Content-Security-Policy-Report-Only", response.headers)
+        self.assertNotIn(csp.HEADER, response.headers)
+        self.assertNotIn(csp.HEADER_REPORT_ONLY, response.headers)
 
-    @override_settings(SECURE_CSP={"DIRECTIVES": {"default-src": ["'self'"]}})
+    @override_settings(SECURE_CSP={"DIRECTIVES": {"default-src": [csp.SELF]}})
     def test_csp_basic(self):
         """
         With SECURE_CSP set to a valid value, the middleware adds a
         "Content-Security-Policy" header to the response.
         """
         response = self.process_response()
-        self.assertEqual(
-            response.headers["Content-Security-Policy"],
-            "default-src 'self'",
-        )
-        self.assertNotIn("Content-Security-Policy-Report-Only", response.headers)
+        self.assertEqual(response.headers[csp.HEADER], "default-src 'self'")
+        self.assertNotIn(csp.HEADER_REPORT_ONLY, response.headers)
 
     @override_settings(
         SECURE_CSP={
-            "DIRECTIVES": {"default-src": ["'self'"]},
-            "INCLUDE_NONCE_IN": ["default-src"],
+            "DIRECTIVES": {"default-src": [csp.SELF, csp.NONCE]},
         }
     )
     def test_csp_basic_with_nonce(self):
         """
         The middleware adds a "Content-Security-Policy" header to the response with a
-        nonce if the "default-src" directive is included in "INCLUDE_NONCE_IN". Since
-        the nonce is random and added to the request, we do extra work to get the
-        request object.
+        nonce if the "default-src" directive includes "csp.NONCE". Since the nonce is
+        random and added to the request, we do extra work to get the request object.
         """
         request = self.request.get("/some/url")
         self.middleware().process_request(request)
         self.assertEqual(
-            self.process_response(request=request).headers["Content-Security-Policy"],
+            self.process_response(request=request).headers[csp.HEADER],
             f"default-src 'self' 'nonce-{request.csp_nonce}'",
         )
 
     @override_settings(
-        SECURE_CSP_REPORT_ONLY={"DIRECTIVES": {"default-src": ["'self'"]}}
+        SECURE_CSP_REPORT_ONLY={"DIRECTIVES": {"default-src": [csp.SELF]}}
     )
     def test_csp_report_only_basic(self):
         """
@@ -357,11 +353,8 @@ class SecurityMiddlewareTest(SimpleTestCase):
         "Content-Security-Policy-Report-Only" header to the response.
         """
         response = self.process_response()
-        self.assertEqual(
-            response.headers["Content-Security-Policy-Report-Only"],
-            "default-src 'self'",
-        )
-        self.assertNotIn("Content-Security-Policy", response.headers)
+        self.assertEqual(response.headers[csp.HEADER_REPORT_ONLY], "default-src 'self'")
+        self.assertNotIn(csp.HEADER, response.headers)
 
     def test_csp_both(self):
         """
@@ -369,16 +362,13 @@ class SecurityMiddlewareTest(SimpleTestCase):
         adds both headers to the response.
         """
         with override_settings(
-            SECURE_CSP={"DIRECTIVES": {"default-src": ["'self'"]}},
-            SECURE_CSP_REPORT_ONLY={"DIRECTIVES": {"default-src": ["'self'"]}},
+            SECURE_CSP={"DIRECTIVES": {"default-src": [csp.SELF]}},
+            SECURE_CSP_REPORT_ONLY={"DIRECTIVES": {"default-src": [csp.SELF]}},
         ):
             response = self.process_response()
+            self.assertEqual(response.headers[csp.HEADER], "default-src 'self'")
             self.assertEqual(
-                response.headers["Content-Security-Policy"],
-                "default-src 'self'",
-            )
-            self.assertEqual(
-                response.headers["Content-Security-Policy-Report-Only"],
+                response.headers[csp.HEADER_REPORT_ONLY],
                 "default-src 'self'",
             )
 
@@ -398,87 +388,91 @@ class BuildCSPTest(SimpleTestCase):
         self.assertPolicyEqual(self.build_csp({}), "")
 
     def test_config_basic(self):
-        csp = {"DIRECTIVES": {"default-src": ["'self'"]}}
-        self.assertPolicyEqual(self.build_csp(csp), "default-src 'self'")
+        policy = {"DIRECTIVES": {"default-src": [csp.SELF]}}
+        self.assertPolicyEqual(self.build_csp(policy), "default-src 'self'")
 
     def test_config_multiple_directives(self):
-        csp = {"DIRECTIVES": {"default-src": ["'self'"], "script-src": ["'self'"]}}
+        policy = {"DIRECTIVES": {"default-src": [csp.SELF], "script-src": [csp.SELF]}}
         self.assertPolicyEqual(
-            self.build_csp(csp), "default-src 'self'; script-src 'self'"
+            self.build_csp(policy), "default-src 'self'; script-src 'self'"
         )
 
     def test_config_value_not_list(self):
-        csp = {"DIRECTIVES": {"default-src": "'self'"}}
-        self.assertPolicyEqual(self.build_csp(csp), "default-src 'self'")
+        policy = {"DIRECTIVES": {"default-src": csp.SELF}}
+        self.assertPolicyEqual(self.build_csp(policy), "default-src 'self'")
 
     def test_config_value_tuple(self):
-        csp = {"DIRECTIVES": {"default-src": ("'self'",)}}
-        self.assertPolicyEqual(self.build_csp(csp), "default-src 'self'")
+        policy = {"DIRECTIVES": {"default-src": (csp.SELF,)}}
+        self.assertPolicyEqual(self.build_csp(policy), "default-src 'self'")
 
     def test_config_value_none(self):
-        csp = {"DIRECTIVES": {"default-src": ["'self'"], "script-src": None}}
-        self.assertPolicyEqual(self.build_csp(csp), "default-src 'self'")
+        policy = {"DIRECTIVES": {"default-src": [csp.SELF], "script-src": None}}
+        self.assertPolicyEqual(self.build_csp(policy), "default-src 'self'")
 
     def test_config_value_boolean_true(self):
-        csp = {
-            "DIRECTIVES": {"default-src": ["'self'"], "block-all-mixed-content": True}
+        policy = {
+            "DIRECTIVES": {"default-src": [csp.SELF], "block-all-mixed-content": True}
         }
         self.assertPolicyEqual(
-            self.build_csp(csp), "default-src 'self'; block-all-mixed-content"
+            self.build_csp(policy), "default-src 'self'; block-all-mixed-content"
         )
 
     def test_config_value_boolean_false(self):
-        csp = {
-            "DIRECTIVES": {"default-src": ["'self'"], "block-all-mixed-content": False}
+        policy = {
+            "DIRECTIVES": {"default-src": [csp.SELF], "block-all-mixed-content": False}
         }
-        self.assertPolicyEqual(self.build_csp(csp), "default-src 'self'")
+        self.assertPolicyEqual(self.build_csp(policy), "default-src 'self'")
 
     def test_config_value_multiple_boolean(self):
-        csp = {
+        policy = {
             "DIRECTIVES": {
-                "default-src": ["'self'"],
+                "default-src": [csp.SELF],
                 "block-all-mixed-content": True,
                 "upgrade-insecure-requests": True,
             }
         }
         self.assertPolicyEqual(
-            self.build_csp(csp),
+            self.build_csp(policy),
             "default-src 'self'; block-all-mixed-content; upgrade-insecure-requests",
         )
 
+    def test_config_with_nonce_arg(self):
+        policy = {"DIRECTIVES": {"default-src": [csp.SELF]}}
+        self.assertPolicyEqual(
+            self.build_csp(policy, nonce="abc123"), "default-src 'self'"
+        )
+
     def test_config_with_nonce(self):
-        csp = {"DIRECTIVES": {"default-src": ["'self'"]}}
-        self.assertPolicyEqual(
-            self.build_csp(csp, nonce="abc123"), "default-src 'self'"
-        )
-
-    def test_config_with_nonce_in(self):
-        csp = {
-            "DIRECTIVES": {"default-src": ["'self'"]},
-            "INCLUDE_NONCE_IN": ["default-src"],
+        policy = {
+            "DIRECTIVES": {"default-src": [csp.SELF, csp.NONCE]},
         }
         self.assertPolicyEqual(
-            self.build_csp(csp, nonce="abc123"), "default-src 'self' 'nonce-abc123'"
+            self.build_csp(policy, nonce="abc123"), "default-src 'self' 'nonce-abc123'"
         )
 
-    def test_config_with_multiple_nonce_in(self):
-        csp = {
-            "DIRECTIVES": {"default-src": ["'self'"], "script-src": ["'self'"]},
-            "INCLUDE_NONCE_IN": ["default-src", "script-src"],
+    def test_config_with_multiple_nonces(self):
+        policy = {
+            "DIRECTIVES": {
+                "default-src": [csp.SELF, csp.NONCE],
+                "script-src": [csp.SELF, csp.NONCE],
+            },
         }
         self.assertPolicyEqual(
-            self.build_csp(csp, nonce="abc123"),
+            self.build_csp(policy, nonce="abc123"),
             "default-src 'self' 'nonce-abc123'; script-src 'self' 'nonce-abc123'",
         )
 
+    def test_config_with_only_nonce_directive(self):
+        policy = {"DIRECTIVES": {"default-src": [csp.NONCE]}}
+        self.assertPolicyEqual(
+            self.build_csp(policy, nonce="abc123"), "default-src 'nonce-abc123'"
+        )
+
     def test_config_with_empty_directive(self):
-        csp = {"DIRECTIVES": {"default-src": []}}
-        self.assertPolicyEqual(self.build_csp(csp), "")
+        policy = {"DIRECTIVES": {"default-src": []}}
+        self.assertPolicyEqual(self.build_csp(policy), "")
 
-    def test_config_with_empty_directive_and_nonce(self):
-        csp = {"DIRECTIVES": {"default-src": []}}
-        self.assertPolicyEqual(self.build_csp(csp, nonce="abc123"), "")
-
-    def test_config_with_empty_directive_and_nonce_in(self):
-        csp = {"DIRECTIVES": {"default-src": []}, "INCLUDE_NONCE_IN": ["default-src"]}
-        self.assertPolicyEqual(self.build_csp(csp, nonce="abc123"), "")
+    def test_nonce_sentinel(self):
+        assert csp.Nonce() == csp.Nonce()
+        assert csp.NONCE == csp.Nonce()
+        assert repr(csp.Nonce()) == "django.middleware.constants.csp.NONCE"

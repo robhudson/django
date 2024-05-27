@@ -5,11 +5,9 @@ from functools import partial
 
 from django.conf import settings
 from django.http import HttpResponsePermanentRedirect
+from django.middleware.constants import csp
 from django.utils.deprecation import MiddlewareMixin
 from django.utils.functional import SimpleLazyObject
-
-CSP_HEADER = "Content-Security-Policy"
-CSP_REPORT_ONLY_HEADER = "Content-Security-Policy-Report-Only"
 
 # TODO: Consider adding constants for the various CSP directive values such as `'self'`,
 # `'unsafe-inline'`, `'unsafe-eval'`, etc.  This could help prevent typos and quoting
@@ -22,21 +20,20 @@ CSP_REPORT_ONLY_HEADER = "Content-Security-Policy-Report-Only"
 
 
 def build_csp(config, nonce=None):
-    csp = []
+    policy = []
     directives = config.get("DIRECTIVES", {})
-    include_nonce_in = config.get("INCLUDE_NONCE_IN", [])
-    # TODO: Consider whether using a sentinal value of ``NONCE`` would be better than a
-    # separate list like ``INCLUDE_NONCE_IN``.
-    # This could simplify setting directives and more closely match the spec.
-    # E.g. ``{"default-src": ['self', NONCE]``.
 
     for directive, value in directives.items():
         if value is None:
             continue
         if not isinstance(value, (list, tuple)):
             value = [value]
-        if nonce and directive in include_nonce_in and len(value):
-            value.append(f"'nonce-{nonce}'")
+        if csp.NONCE in value:
+            if nonce:
+                value = [f"'nonce-{nonce}'" if v == csp.NONCE else v for v in value]
+            else:
+                # Remove the `NONCE` sentinel value if no nonce is provided.
+                value = [v for v in value if v != csp.NONCE]
         if len(value):
             # Support boolean directives, like `upgrade-insecure-requests`.
             if value[0] is True:
@@ -47,8 +44,8 @@ def build_csp(config, nonce=None):
                 value = " ".join(value)
         else:
             continue
-        csp.append(f"{directive} {value}".strip())
-    return "; ".join(csp)
+        policy.append(f"{directive} {value}".strip())
+    return "; ".join(policy)
 
 
 class SecurityMiddleware(MiddlewareMixin):
@@ -130,12 +127,12 @@ class SecurityMiddleware(MiddlewareMixin):
 
         # If headers are already set on the response, don't overwrite them.
         # This allows for views to set their own CSP headers as needed.
-        if self.csp and CSP_HEADER not in response:
-            csp = build_csp(self.csp, nonce=request.csp_nonce)
-            response.headers[CSP_HEADER] = csp
+        if self.csp and csp.HEADER not in response:
+            response.headers[csp.HEADER] = build_csp(self.csp, nonce=request.csp_nonce)
 
-        if self.csp_report_only and CSP_REPORT_ONLY_HEADER not in response:
-            csp = build_csp(self.csp_report_only, nonce=request.csp_nonce)
-            response.headers[CSP_REPORT_ONLY_HEADER] = csp
+        if self.csp_report_only and csp.HEADER_REPORT_ONLY not in response:
+            response.headers[csp.HEADER_REPORT_ONLY] = build_csp(
+                self.csp_report_only, nonce=request.csp_nonce
+            )
 
         return response
